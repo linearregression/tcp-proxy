@@ -1,21 +1,6 @@
 /* -*- Mode:C++; c-file-style:"gnu"; indent-tabs-mode:nil; -*- */
 /*
- * Copyright (c) 2010 Adrian Sai-wah Tam
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation;
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
- *
- * Author: Adrian Sai-wah Tam <adrian.sw.tam@gmail.com>
+ * Author: Camila Faundez
  */
 
 #define NS_LOG_APPEND_CONTEXT \
@@ -44,6 +29,9 @@ TcpNewVegas::GetTypeId (void)
     .AddTraceSource ("CongestionWindow",
                      "The TCP connection's congestion window",
                      MakeTraceSourceAccessor (&TcpNewVegas::m_cWnd))
+    .AddTraceSource ("BaseRTT",
+                     "The TCP connection's congestion window",
+                     MakeTraceSourceAccessor (&TcpNewVegas::m_baseRTT))
   ;
   return tid;
 }
@@ -93,7 +81,13 @@ TcpNewVegas::Connect (const Address & address)
 {
   NS_LOG_FUNCTION (this << address);
   InitializeCwnd ();
+  TraceConnectWithoutContext ("BaseRTT", MakeCallback (&TcpNewVegas::BaseRTTChange, this));
   return TcpSocketBase::Connect (address);
+}
+
+void
+TcpNewVegas::BaseRTTChange (int64_t o , int64_t n){
+  NS_LOG_FUNCTION (this << o << n);
 }
 
 /* Limit the size of in-flight data by cwnd and receiver's rxwin */
@@ -117,7 +111,6 @@ TcpNewVegas::SendDataPacket (SequenceNumber32 seq, uint32_t maxSize, bool withAc
 
   NS_LOG_LOGIC ("Seq: " << seq + size);
 
-  m_info.Discard (seq + size);
   m_info.Add(seq + size); // Create new node and add it to the list
   m_info.AddBytes(size); // Update sent bytes
   return size;
@@ -126,30 +119,30 @@ TcpNewVegas::SendDataPacket (SequenceNumber32 seq, uint32_t maxSize, bool withAc
 void
 TcpNewVegas::EstimateDiff (SequenceNumber32 const& seq)
 {
-  VegasNode node = m_info.GetFirstNode(seq);
+  VegasNode node = m_info.GetFirstNode(seq); // Get node with info
 
-  Time rtt = Simulator::Now() - node.GetSentTime();
+  Time rtt = Simulator::Now() - node.GetSentTime(); // Calculate RTT
   int64_t lastRTT = rtt.GetInteger ();
 
-  //m_baseRTT = ( lastRTT < m_baseRTT ) ? lastRTT : m_baseRTT;
+  uint32_t bytes = node.GetBytes(); // Get bytes sent in last RTT
 
-  uint32_t bytes = node.GetBytes();
-
-  if (bytes <= m_segmentSize) {
+  if (bytes <= m_segmentSize) { // If only sent one packet in last RTT, reset BaseRTT
     m_baseRTT =  lastRTT;
     NS_LOG_INFO ("Reset BaseRTT to: " << m_baseRTT);
   }
 
-  else if (lastRTT < m_baseRTT ) {
+  else if (lastRTT < m_baseRTT ) { // Check to update BaseRTT
     m_baseRTT = lastRTT;
     NS_LOG_INFO ("Updated BaseRTT to: " << m_baseRTT);
   }
 
-  // m_diff = static_cast<double> (m_cWnd.Get()) / m_baseRTT - static_cast<double> (bytes) / lastRTT;
-  m_diff = static_cast<double> (m_cWnd.Get()) / m_baseRTT - static_cast<double> (m_cWnd.Get()) / lastRTT;
+  // Calculate difference = expected - actual rate
+  double actual = static_cast<double> (m_cWnd.Get()) / lastRTT;
+  double expected = static_cast<double> (m_cWnd.Get()) / m_baseRTT.Get();
 
-  m_diff *= m_baseRTT;
-  m_diff /= m_segmentSize;
+  m_diff = (expected - actual) * m_baseRTT.Get() / m_segmentSize;
+
+  NS_LOG_INFO ("Expected Rate: " << expected << " Actual Rate: " << actual);
 
   NS_LOG_INFO ("BaseRTT: " << m_baseRTT << " LastRTT: " << lastRTT << " Cwnd: " << m_cWnd << " Bytes: " << bytes << " Diff: " << m_diff);
 }
@@ -168,13 +161,13 @@ TcpNewVegas::CongestionAvoidance(void)
   if (m_diff < m_alpha)
     {
       m_cWnd+= m_segmentSize;
-      NS_LOG_INFO ("In CongestionAvoidance, increased cwnd to" << m_cWnd << ", segment size " << m_segmentSize);
+      NS_LOG_INFO ("In CongestionAvoidance, increased cwnd to " << m_cWnd << ", segment size " << m_segmentSize);
     }
 
   else if (m_beta < m_diff && m_cWnd > 2*m_segmentSize)
     {
       m_cWnd-= m_segmentSize;
-      NS_LOG_INFO ("In CongestionAvoidance, decreased cwnd to" << m_cWnd << ", segment size " << m_segmentSize);
+      NS_LOG_INFO ("In CongestionAvoidance, decreased cwnd to " << m_cWnd << ", segment size " << m_segmentSize);
     }
   else
     NS_LOG_INFO ("In CongestionAvoidance, mantained cwnd " << m_cWnd);
@@ -213,10 +206,10 @@ TcpNewVegas::NewAck (const SequenceNumber32& seq)
   // Check for retransmit if first/second ACK after DupAck
   if (m_checkRetransmit){
     NS_LOG_LOGIC ("Check for retransmit (" << m_checkRetransmit << ")");
-    VegasNode node = m_info.GetLastNode(seq);
-    Time rtt = Simulator::Now() - node.GetSentTime();
+    VegasNode node = m_info.GetLastNode(seq); // Get node with info
+    Time rtt = Simulator::Now() - node.GetSentTime(); // Calculate RTT for the specific packet
 
-    if (m_rto.Get() < rtt) //If RTT>RTO, retransmits
+    if (m_rto.Get() < rtt) // If RTT>RTO, retransmits
     {
       NS_LOG_LOGIC ("Retransmit");
       m_nextTxSequence = m_txBuffer.HeadSequence ();
@@ -226,18 +219,20 @@ TcpNewVegas::NewAck (const SequenceNumber32& seq)
     else
       m_checkRetransmit--;
   }
+  
+  m_info.DiscardUpTo(seq); //Delete old info
 }
 
-// Fast recovery and fast retransmit
+// Fast recovery and fast retransmit, extends TcpReno::DupAck
 void
 TcpNewVegas::DupAck (const TcpHeader& t, uint32_t count)
 {
   NS_LOG_FUNCTION (this << "t " << count);
   if (!m_inFastRec)
     { // Check to fast retransmit
-      VegasNode node = m_info.GetFirstNode(t.GetAckNumber());
-      Time rtt = Simulator::Now() - node.GetSentTime();
-      if (m_rto.Get() < rtt)
+      VegasNode node = m_info.GetLastNode(t.GetAckNumber()); // Get node with info
+      Time rtt = Simulator::Now() - node.GetSentTime(); // Calculate RTT for the specific packet
+      if (m_rto.Get() < rtt) // If RTT>RTO, retransmits
       {
         m_ssThresh = std::max (2 * m_segmentSize, BytesInFlight () / 2);
         m_cWnd = m_ssThresh + 3 * m_segmentSize;
@@ -255,7 +250,7 @@ TcpNewVegas::DupAck (const TcpHeader& t, uint32_t count)
     };
 }
 
-// Retransmit timeout
+// Retransmit timeout, extends TcpReno::Retransmit
 void TcpNewVegas::Retransmit (void)
 {
   NS_LOG_FUNCTION (this);
@@ -316,7 +311,7 @@ void
 TcpNewVegas::InitializeCwnd (void)
 {
   /*
-   * Description:
+   * Initializes congestion window acording to "TCP Vegas Revisited"
    */
   m_cWnd = m_initialCWnd * m_segmentSize;
 }

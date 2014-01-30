@@ -1,12 +1,19 @@
 #include "ns3/vegas-node.h"
 #include "ns3/log.h"
+#include "ns3/simulator.h"
 
 NS_LOG_COMPONENT_DEFINE ("VegasNode");
 
 namespace ns3 {
 
-VegasNode::VegasNode (void)
- : m_bytes (0)
+VegasNode::VegasNode (void) {
+  NS_LOG_FUNCTION (this);
+}
+
+VegasNode::VegasNode (SequenceNumber32 seq)
+ : m_seqNumber (seq),
+   m_sentTime ( Simulator::Now() ),
+   m_bytes (0)
 {
   NS_LOG_FUNCTION (this);
 }

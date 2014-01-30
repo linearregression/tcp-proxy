@@ -1,21 +1,6 @@
 /* -*- Mode:C++; c-file-style:"gnu"; indent-tabs-mode:nil; -*- */
 /*
- * Copyright (c) 2010 Adrian Sai-wah Tam
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation;
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
- *
- * Author: Adrian Sai-wah Tam <adrian.sw.tam@gmail.com>
+ * Author: Camila Faundez
  */
 
 #ifndef TCP_NEWVEGAS_H
@@ -78,6 +63,7 @@ private:
   void SlowStart (void);
   void CongestionAvoidance (void);
   void EstimateDiff (const SequenceNumber32& seq);
+  void BaseRTTChange (int64_t o , int64_t n);
 
 protected:
   TracedValue<uint32_t>  m_cWnd;         //!< Congestion window
@@ -85,7 +71,7 @@ protected:
   uint32_t               m_initialCWnd;  //!< Initial cWnd value
   bool                   m_inFastRec;    //!< currently in fast recovery
 
-  int64_t                m_baseRTT;      //< Base RTT
+  TracedValue<int64_t>   m_baseRTT;      //!< Base RTT
   uint32_t               m_alpha;
   uint32_t               m_beta;  
   uint32_t               m_gamma;

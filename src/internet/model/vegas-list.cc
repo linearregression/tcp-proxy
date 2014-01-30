@@ -1,6 +1,5 @@
 #include "vegas-list.h"
 #include "ns3/log.h"
-#include "ns3/simulator.h"
 
 NS_LOG_COMPONENT_DEFINE ("VegasList");
 
@@ -10,9 +9,9 @@ void
 VegasList::Add(SequenceNumber32 seq) {
   NS_LOG_LOGIC ("Seq " << seq);
   //std::cout << "Add " << seq << std::endl;
-  VegasNode node;
-  node.SetSeqNumber(seq);
-  node.SetSentTime(Simulator::Now());
+  VegasNode node (seq);
+  //node.SetSeqNumber(seq);
+  //node.SetSentTime(Simulator::Now());
 
   m_data.push_back (node);
 }
