@@ -18,18 +18,17 @@
 #include "ns3/network-module.h"
 #include "ns3/internet-module.h"
 #include "ns3/point-to-point-module.h"
-#include "ns3/csma-module.h"
 #include "ns3/applications-module.h"
 
 // Default Network Topology
 //
 //    LAN 10.0.X.0
 //  ================
-//  |    |    |    |    10.1.X.0          10.2.0.0
+//  |    |    |    |    10.1.Y.0          10.2.0.0
 // n0   n1   n2   n6 -------------- n7 -------------- n8   n3   n4   n5
 //                   point-to-point    point-to-point  |    |    |    |
 //                                                     ================
-//                                                       LAN 10.3.0.0
+//                                                       LAN 10.3.X.0
 
 using namespace ns3;
 
@@ -60,20 +59,13 @@ protected:
 private:
   virtual void StartApplication (void);
   virtual void StopApplication (void);
-  virtual void CwndChange (uint32_t oldCwnd, uint32_t newCwnd);
-  virtual void RwndChange (uint32_t oldCwnd, uint32_t newCwnd);
-  virtual void StateChange (TcpStates_t oldCwnd, TcpStates_t newCwnd);
   
-  uint16_t m_port; //!< Port on which we listen for incoming packets.
-  Ptr<Socket> m_socket; //!< Listener socket
+  uint16_t m_port;                      //!< Listening port
+  Ptr<Socket> m_socket;                 //!< Listener socket
   std::vector<Ptr<Socket> > m_iSockets; //!< input sockets
   std::vector<Ptr<Socket> > m_oSockets; //!< output sockets
-  std::map<Ptr<Socket>, int> m_map; //!< maps sockets to their indices
-  std::map<Address, Address> m_pair; //!< maps addresses to their pair
-  Address m_peerAddress; //!< Remote peer address
-  uint16_t m_peerPort; //!< Remote peer port
-  bool m_isStagnant; //!< Catch for border case
-  uint32_t m_recvBuffer;
+  std::map<Ptr<Socket>, int> m_map;     //!< maps sockets to their indices
+  std::map<Address, Address> m_pair;    //!< maps addresses to their pair
 };
 
 TypeId
@@ -86,16 +78,6 @@ TcpProxy::GetTypeId (void)
                    UintegerValue (0),
                    MakeUintegerAccessor (&TcpProxy::m_port),
                    MakeUintegerChecker<uint16_t> ())
-    .AddAttribute ("RemoteAddress", 
-                   "The destination Address of the outbound packets",
-                   AddressValue (),
-                   MakeAddressAccessor (&TcpProxy::m_peerAddress),
-                   MakeAddressChecker ())
-    .AddAttribute ("RemotePort", 
-                   "The destination port of the outbound packets",
-                   UintegerValue (0),
-                   MakeUintegerAccessor (&TcpProxy::m_peerPort),
-                   MakeUintegerChecker<uint16_t> ())
   ;
   return tid;
 }
@@ -103,8 +85,6 @@ TcpProxy::GetTypeId (void)
 TcpProxy::TcpProxy ()
 {
   NS_LOG_FUNCTION (this);
-  m_isStagnant = false;
-  m_recvBuffer = 131072;
 }
 
 TcpProxy::~TcpProxy()
@@ -189,10 +169,6 @@ TcpProxy::HandleConnectionCreated (Ptr<Socket> socket, const Address &address)
 	  oSocket->SetSendCallback (MakeCallback (&TcpProxy::HandleSend, this));
 	  socket->SetSendCallback (MakeCallback (&TcpProxy::HandleSend, this));
 	  
-	  oSocket->TraceConnectWithoutContext ("CongestionWindow", MakeCallback (&TcpProxy::CwndChange, this));
-	  oSocket->TraceConnectWithoutContext ("RWND", MakeCallback (&TcpProxy::RwndChange, this));
-	  oSocket->TraceConnectWithoutContext ("State", MakeCallback (&TcpProxy::StateChange, this));
-	  
 	  return;
 	}
   else
@@ -223,7 +199,6 @@ TcpProxy::HandleRecv (Ptr<Socket> socket)
   NS_LOG_LOGIC ("iSocket" << iSocket);
   NS_LOG_LOGIC ("oSocket" << oSocket);
   
-  m_isStagnant = false;
   Forward (iSocket, oSocket);
 }
 
@@ -267,11 +242,6 @@ TcpProxy::Forward (Ptr<Socket> src, Ptr<Socket> dst)
 		}
 	  if (dst->GetTxAvailable () <= 0)
 		{
-		  if (DynamicCast<TcpSocketBase>(src)->AdvertisedWindowSize () < 536)
-			{
-			  m_isStagnant = true;
-			}
-
 		  NS_LOG_INFO ("No space in send buffer. Returning...");
 		  break;
 		}
@@ -282,10 +252,6 @@ TcpProxy::Forward (Ptr<Socket> src, Ptr<Socket> dst)
 	  if (size == real)
 		{
 		  NS_LOG_INFO ("Packet forwarded (" << size << " bytes)");
-		  if (m_isStagnant)
-			{
-			  DynamicCast<TcpSocketBase>(src)->SendEmptyPacket (TcpHeader::ACK);
-			}
 		}
 	  else
 		{
@@ -309,24 +275,6 @@ TcpProxy::SetPort (uint16_t port)
 {
   NS_LOG_FUNCTION (this << port);
   m_port = port;
-}
-
-void
-TcpProxy::CwndChange (uint32_t oldCwnd, uint32_t newCwnd)
-{
-   NS_LOG_FUNCTION (this << oldCwnd << newCwnd);
-}
-
-void
-TcpProxy::RwndChange (uint32_t oldCwnd, uint32_t newCwnd)
-{
-   NS_LOG_FUNCTION (this << oldCwnd << newCwnd);
-}
-
-void
-TcpProxy::StateChange (TcpStates_t oldCwnd, TcpStates_t newCwnd)
-{
-   NS_LOG_FUNCTION (this << oldCwnd << newCwnd);
 }
 
 /* * * * * * * * * * * * * END OF TcpProxy CLASS * * * * * * * * * * * * */
@@ -437,29 +385,26 @@ main (int argc, char *argv[])
   
   NS_LOG_LOGIC ("Creating channels...");
   
-  std::vector<NetDeviceContainer> deviceContainers (2 * nSubnets + 2);
+  std::vector<NetDeviceContainer> deviceContainers (nSubnets * (2 * szSubnet + 1) + 1);
   
-  NodeContainer snodes;
+  PointToPointHelper clinker;
+  // Set attributes
+  clinker.SetDeviceAttribute("DataRate", StringValue("1Gbps"));
+  clinker.SetChannelAttribute("Delay", StringValue("0.1ms"));
+  
   for (uint32_t i=0; i < nSubnets; ++i)
 	{
 	  // Create connections over each client subnet
-	  NodeContainer cnodes;
-	  cnodes.Add (routers.Get(i));
 	  for (uint32_t j=0; j < szSubnet; ++j)
 		{
+		  NodeContainer cnodes;
+		  cnodes.Add (routers.Get(i));
 		  // Connect each node to its router
 		  cnodes.Add (subnets[i].Get(j));
-		  // Add each server to their subnet
-		  snodes.Add (servers.Get(szSubnet * i + j));
+		  
+		  deviceContainers[szSubnet * i + j] = (clinker.Install (cnodes));
+		  clinker.EnablePcap ("tcpexp", deviceContainers[szSubnet * i + j].Get (1), true);
 		}
-	  CsmaHelper clinker;
-	  
-	  // Set attributes
-	  clinker.SetChannelAttribute("DataRate", StringValue("1Gbps"));
-	  clinker.SetChannelAttribute("Delay", StringValue("0.1ms"));
-
-	  deviceContainers[i] = clinker.Install (cnodes);
-	  //clinker.EnablePcap ("tcpexp", deviceContainers[i].Get (1), true);
 	}
   
   // Connect all client routers to the middle router
@@ -474,7 +419,7 @@ main (int argc, char *argv[])
 	  linker.SetDeviceAttribute("DataRate", StringValue("100Mbps"));
 	  linker.SetChannelAttribute("Delay", StringValue(delay));
 	  
-	  deviceContainers[nSubnets + i] = linker.Install (nodes);
+	  deviceContainers[szSubnet * nSubnets + i] = linker.Install (nodes);
 
 	  //linker.EnablePcap ("tcpexp", deviceContainers[nSubnets + i].Get (0), true);
 	}
@@ -489,18 +434,24 @@ main (int argc, char *argv[])
   linker.SetDeviceAttribute("DataRate", StringValue("100Mbps"));
   linker.SetChannelAttribute("Delay", StringValue(delay));
 
-  deviceContainers[2 * nSubnets] = linker.Install (nodes);
+  deviceContainers[(szSubnet + 1) * nSubnets] = linker.Install (nodes);
   //linker.EnablePcap ("tcpexp", deviceContainers[2 * nSubnets].Get (0), true);
   
   // Finally, connect server subnet
-  CsmaHelper slinker;
+  PointToPointHelper slinker;
   // Set attributes
-  slinker.SetChannelAttribute("DataRate", StringValue("1Gbps"));
+  slinker.SetDeviceAttribute("DataRate", StringValue("1Gbps"));
   slinker.SetChannelAttribute("Delay", StringValue("0.1ms"));
 
-  snodes.Add (routers.Get(nSubnets+1));
-  deviceContainers[2 * nSubnets + 1] = slinker.Install (snodes);
-  //slinker.EnablePcap ("tcpexp", deviceContainers[2 * nSubnets + 1].Get (0), true);
+  // Add each server to their subnet
+  for (uint32_t i = 0; i < nSubnets * szSubnet; ++i)
+	{
+	  NodeContainer snodes;
+	  snodes.Add (servers.Get(i));
+	  snodes.Add (routers.Get(nSubnets+1));
+	  deviceContainers[(szSubnet + 1) * nSubnets + 1 + i] = slinker.Install (snodes);
+	  //slinker.EnablePcap ("tcpexp", deviceContainers[2 * nSubnets + 1].Get (0), true);
+	}
 
   NS_LOG_LOGIC ("Done creating channels.");
 
@@ -521,11 +472,11 @@ main (int argc, char *argv[])
   Ipv4AddressHelper addressHlpr;
   
   // Iface containers to recall assigned IPs later during app installation
-  std::vector<Ipv4InterfaceContainer> cIpIfaces(nSubnets);
+  std::vector<Ipv4InterfaceContainer> cIpIfaces(nSubnets * szSubnet);
   std::vector<Ipv4InterfaceContainer> pIpIfaces(nSubnets);
-  Ipv4InterfaceContainer sIpIfaces;
+  std::vector<Ipv4InterfaceContainer> sIpIfaces(nSubnets * szSubnet);
   
-  for (uint32_t i=0; i < nSubnets; i++)
+  for (uint32_t i=0; i < nSubnets * szSubnet; i++)
 	{
 	  std::ostringstream sNetIp;
 	  sNetIp << "10.0." << i << ".0";
@@ -538,14 +489,19 @@ main (int argc, char *argv[])
 	  std::ostringstream sNetIp;
 	  sNetIp << "10.1." << i << ".0";
 	  addressHlpr.SetBase(sNetIp.str().c_str(), "255.255.255.0");
-	  pIpIfaces[i] = addressHlpr.Assign(deviceContainers[nSubnets + i]);
+	  pIpIfaces[i] = addressHlpr.Assign(deviceContainers[nSubnets * szSubnet + i]);
 	}
   
   addressHlpr.SetBase("10.2.0.0", "255.255.255.0");
-  addressHlpr.Assign(deviceContainers[2 * nSubnets]);
+  addressHlpr.Assign(deviceContainers[nSubnets * (szSubnet + 1)]);
   
-  addressHlpr.SetBase("10.3.0.0", "255.255.255.0");
-  sIpIfaces = addressHlpr.Assign(deviceContainers[2 * nSubnets + 1]);
+  for (uint32_t i=0; i < nSubnets * szSubnet; i++)
+	{
+	  std::ostringstream sNetIp;
+	  sNetIp << "10.3." << i << ".0";
+	  addressHlpr.SetBase(sNetIp.str().c_str(), "255.255.255.0");
+	  sIpIfaces[i] = addressHlpr.Assign(deviceContainers[(szSubnet + 1) * nSubnets + 1 + i]);
+	}
 
   NS_LOG_LOGIC ("Done setting addresses.");
 
@@ -573,12 +529,12 @@ main (int argc, char *argv[])
 	{
 	  for (uint32_t j=0; j < szSubnet; ++j, ++x)
 		{
-		  Ipv4Address caddr = cIpIfaces[i].GetAddress (j + 1);
-		  Ipv4Address saddr = sIpIfaces.GetAddress (i * szSubnet + j);
+		  Ipv4Address caddr = cIpIfaces[i*szSubnet+j].GetAddress (1);
+		  Ipv4Address saddr = sIpIfaces[i*szSubnet+j].GetAddress (0);
 		  Ipv4Address paddr = saddr;
 		  uint16_t pPort = sPort;
 		  
-		  if (proxy)
+		  if (proxy && j == 2u)
 			{
 			  paddr = pIpIfaces[i].GetAddress (1);
 			  proxyapp->AddPair (caddr, 0, saddr, sPort);
